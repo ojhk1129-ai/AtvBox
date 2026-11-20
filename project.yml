@@ -14,6 +14,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.atvbox.app
         PRODUCT_NAME: AtvBox
         SWIFT_VERSION: "5.0"
+        GENERATE_INFOPLIST_FILE: true
         TARGETED_DEVICE_FAMILY: "1,2"
         INFOPLIST_KEY_CFBundleDisplayName: AtvBox
         INFOPLIST_KEY_LSRequiresIPhoneOS: true
