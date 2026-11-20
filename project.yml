@@ -1,0 +1,23 @@
+name: AtvBox
+options:
+  bundleIdPrefix: com.atvbox
+  deploymentTarget:
+    iOS: "15.0"
+targets:
+  AtvBox:
+    type: application
+    platform: iOS
+    sources:
+      - AtvBox
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.atvbox.app
+        PRODUCT_NAME: AtvBox
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        INFOPLIST_KEY_CFBundleDisplayName: AtvBox
+        INFOPLIST_KEY_LSRequiresIPhoneOS: true
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone:
+          - UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "需要访问局域网以连接电视盒子"
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: "保存电视截图到相册"
