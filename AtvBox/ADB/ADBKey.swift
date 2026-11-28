@@ -2,7 +2,11 @@ import Foundation
 import Security
 
 /// ADB 身份密钥（RSA-2048）。
-/// 私钥存在钥匙串里，盒子只认这一把钥匙，电视上点一次“允许”以后就不用再点。
+///
+/// 钥匙存在 App 自己的文件里（Application Support/adbkey.p8，PKCS#8 DER），
+/// 不走系统钥匙串：LiveContainer 里钥匙串不可靠，钥匙造出来了也签不了名，
+/// 第一次连就一直报“签名失败”。盒子只认这一把钥匙，电视上点一次“允许”
+/// 以后就不用再点；换钥匙后电视会再弹一次授权框，点允许就行。
 /// 公钥格式是 ADB 专用的：base64( mod长度LE(4) + mod大端字节 + 指数LE(4) ) + " atvbox@ios"
 /// （对应 AOSP system/core/libcrypto_utils/android_pubkey.c 的编码）。
 enum ADBKeyError: Error, LocalizedError {
@@ -25,38 +29,71 @@ enum ADBKeyError: Error, LocalizedError {
 
 final class ADBKeyManager {
     static let shared = ADBKeyManager()
-    private let tag = "com.atvbox.adbkey".data(using: .utf8)!
 
     private var cachedPrivateKey: SecKey?
 
-    /// 取出或生成私钥。
+    /// 私钥文件：Application Support/adbkey.p8。
+    private var keyFileURL: URL? {
+        guard let dir = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask).first else {
+            return nil
+        }
+        return dir.appendingPathComponent("adbkey.p8")
+    }
+
+    /// 从 CFError 里取真正的 OSStatus。
+    /// 注意：CFError 不能直接 as? OSStatus 转（永远是 nil，以前报错
+    /// 才一直显示 -1，真实原因全被盖住了），必须用 CFErrorGetCode。
+    private func status(from error: Unmanaged<CFError>?) -> OSStatus {
+        guard let cfError = error?.takeRetainedValue() else { return -1 }
+        return OSStatus(CFErrorGetCode(cfError))
+    }
+
+    /// 取出或生成私钥：先读文件里的，没有就新生成一把并存文件。
     func privateKey() throws -> SecKey {
         if let key = cachedPrivateKey { return key }
 
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassKey,
-            kSecAttrApplicationTag as String: tag,
-            kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
-            kSecReturnRef as String: true,
-        ]
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        if status == errSecSuccess, let key = item as! SecKey? {
-            cachedPrivateKey = key
-            return key
+        // 1. 文件里有就导进来。
+        if let url = keyFileURL,
+           let data = try? Data(contentsOf: url),
+           !data.isEmpty {
+            var error: Unmanaged<CFError>?
+            let attrs: [String: Any] = [
+                kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
+                kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
+                kSecAttrKeySizeInBits as String: 2048,
+            ]
+            if let key = SecKeyCreateWithData(
+                data as CFData, attrs as CFDictionary, &error) {
+                cachedPrivateKey = key
+                return key
+            }
+            // 文件坏了就删掉，重新生成一把（不然每次启动都卡在这）。
+            try? FileManager.default.removeItem(at: url)
         }
 
+        // 2. 新生成一把（不进钥匙串，只放内存）。
         let attrs: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeRSA,
             kSecAttrKeySizeInBits as String: 2048,
-            kSecAttrIsPermanent as String: true,
-            kSecAttrApplicationTag as String: tag,
+            kSecAttrIsPermanent as String: false,
+            kSecAttrIsExtractable as String: true,
         ]
         var error: Unmanaged<CFError>?
         guard let key = SecKeyCreateRandomKey(attrs as CFDictionary, &error) else {
-            throw ADBKeyError.generateFailed(error?.takeRetainedValue() as? OSStatus ?? -1)
+            throw ADBKeyError.generateFailed(status(from: error))
         }
         cachedPrivateKey = key
+
+        // 3. 导出私钥存文件，下次启动直接用同一把（盒子认得，不用重新授权）。
+        // 导出失败也不影响这次连接，只是下次启动会换一把，电视再弹一次授权框。
+        if let url = keyFileURL,
+           let exported = SecKeyCopyExternalRepresentation(key, &error) {
+            let dir = url.deletingLastPathComponent()
+            try? FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true)
+            try? (exported as Data).write(to: url, options: .atomic)
+        }
         return key
     }
 
@@ -66,7 +103,7 @@ final class ADBKeyManager {
         var error: Unmanaged<CFError>?
         guard let sig = SecKeyCreateSignature(
             key, .rsaSignatureDigestPKCS1v15SHA1, token as CFData, &error) else {
-            throw ADBKeyError.signFailed(error?.takeRetainedValue() as? OSStatus ?? -1)
+            throw ADBKeyError.signFailed(status(from: error))
         }
         return sig as Data
     }
